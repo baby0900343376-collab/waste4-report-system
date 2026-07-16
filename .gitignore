@@ -1,0 +1,28 @@
+# 環境變數（含API金鑰，絕對不能上傳）
+.env
+
+# Python 虛擬環境
+backend/venv/
+venv/
+__pycache__/
+*.pyc
+
+# 資料庫（本機資料，不應該進版本控制）
+*.db
+*.db-journal
+
+# 自簽 HTTPS 憑證（每台機器產生的憑證不該共用/公開）
+backend/cert.pem
+backend/key.pem
+cert.pem
+key.pem
+
+# 上傳的聯單照片（使用者資料，不該進版本控制）
+backend/static/uploads/*
+!backend/static/uploads/.gitkeep
+
+# 作業系統/編輯器產生的雜項檔案
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

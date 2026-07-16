@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>聯單拍照上傳</title>
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<style>
+  :root{
+    --ink:#1c2620; --paper:#f6f4ef; --line:#d8d2c4;
+    --green:#2f5d4f; --green-deep:#1d3f35; --red:#a5402f; --amber:#8a5a12;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--paper); color:var(--ink); font-family:'Segoe UI',system-ui,sans-serif;}
+  .wrap{max-width:480px; margin:0 auto; padding:20px 16px 60px;}
+  h1{font-size:19px; border-bottom:2px solid var(--ink); padding-bottom:10px;}
+  .field{margin-bottom:14px;}
+  .field label{display:block; font-size:12px; font-weight:700; color:#6b6459; margin-bottom:4px; text-transform:uppercase;}
+  .field input{width:100%; padding:11px 10px; border:1px solid var(--line); border-radius:6px; font-size:15px; background:#fff;}
+
+  .add-row{display:flex; gap:10px;}
+  .drop{
+    flex:1; border:2px dashed var(--line); border-radius:8px; padding:20px 10px; text-align:center;
+    cursor:pointer; background:#fff; display:block;
+  }
+  .drop input{display:none;}
+  .drop .icon{font-size:24px;}
+  .drop .main{font-size:13px; font-weight:700; margin-top:4px;}
+
+  .queue{margin-top:16px;}
+  .queue h2{font-size:13px; color:#6b6459; margin-bottom:8px;}
+  .qitem{
+    display:flex; align-items:center; gap:10px; background:#fff; border:1px solid var(--line);
+    border-radius:8px; padding:8px 10px; margin-bottom:8px;
+  }
+  .qitem img{width:44px; height:44px; object-fit:cover; border-radius:6px; flex:none;}
+  .qitem .info{flex:1; font-size:12.5px; overflow:hidden;}
+  .qitem .name{white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .qitem .st{font-size:11px; font-weight:700; margin-top:2px;}
+  .qitem .st.pending{color:#6b6459;}
+  .qitem .st.uploading{color:var(--amber);}
+  .qitem .st.done{color:var(--green-deep);}
+  .qitem .st.error{color:var(--red);}
+  .qitem .remove{background:none; border:none; color:var(--red); font-size:18px; cursor:pointer; flex:none; padding:0 6px;}
+
+  .btn{width:100%; padding:14px; font-size:16px; font-weight:700; border:none; border-radius:8px; background:var(--green-deep); color:#fff; margin-top:14px;}
+  .btn:disabled{opacity:0.4;}
+  .msg{margin-top:14px; padding:12px; border-radius:8px; font-size:14px;}
+  .msg.info{background:#fff; color:#6b6459; border:1px solid var(--line);}
+
+  .list{margin-top:20px;}
+  .list h2{font-size:14px; color:#6b6459;}
+  .item{background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-bottom:8px; font-size:13px;}
+  .item .id{font-weight:700;}
+  .item .status{float:right; font-size:11px; padding:2px 8px; border-radius:10px;}
+  .status.need_review{background:#fdf0da; color:#8a5a12;}
+  .status.confirmed{background:#e2f2ea; color:#1d5c3f;}
+
+  .primary-cam-btn{
+    width:100%; padding:16px; font-size:16px; font-weight:800; border:none; border-radius:10px;
+    background:var(--green-deep); color:#fff; margin-bottom:10px; display:flex; align-items:center;
+    justify-content:center; gap:8px;
+  }
+  .secondary-row{font-size:12px; color:#6b6459; text-align:center; margin-bottom:14px;}
+  .secondary-row a{color:var(--green-deep); font-weight:700; text-decoration:underline; cursor:pointer;}
+
+  #cameraOverlay{
+    position:fixed; inset:0; background:#000; z-index:100; display:none;
+    flex-direction:column; align-items:center; justify-content:center;
+  }
+  #cameraOverlay.active{display:flex;}
+  #cameraVideo{width:100%; height:100%; object-fit:cover;}
+  .cam-topbar{
+    position:absolute; top:0; left:0; right:0; padding:14px 16px; display:flex;
+    justify-content:space-between; align-items:center; background:linear-gradient(rgba(0,0,0,0.6), transparent);
+    color:#fff; font-size:14px; z-index:2;
+  }
+  .cam-topbar .count{font-weight:800; font-size:16px;}
+  .cam-topbar button{background:rgba(255,255,255,0.15); color:#fff; border:none; border-radius:6px; padding:8px 14px; font-size:13px; font-weight:700;}
+  .cam-bottombar{
+    position:absolute; bottom:0; left:0; right:0; padding:26px 16px 34px; display:flex;
+    justify-content:center; align-items:center; background:linear-gradient(transparent, rgba(0,0,0,0.6)); z-index:2;
+  }
+  .shutter{
+    width:74px; height:74px; border-radius:50%; background:#fff; border:5px solid rgba(255,255,255,0.4);
+    box-shadow:0 0 0 2px #fff inset;
+  }
+  .shutter:active{background:#ddd;}
+  .cam-flash{position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:3;}
+  .cam-flash.flashing{animation:flash 0.25s ease-out;}
+  @keyframes flash{ 0%{opacity:0.85;} 100%{opacity:0;} }
+  .cam-error{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column;
+    gap:12px; padding:30px; text-align:center; color:#fff; background:#111; z-index:4;
+  }
+  .cam-error button{background:var(--green-deep); color:#fff; border:none; padding:10px 18px; border-radius:8px; font-weight:700;}
+
+  .barcode-hint{
+    position:absolute; top:64px; left:16px; right:16px; z-index:2;
+    background:rgba(47,93,79,0.92); color:#fff; padding:10px 14px; border-radius:8px;
+    font-size:14px; font-weight:700; text-align:center; font-family:monospace;
+  }
+  .barcode-hint.stale{background:rgba(0,0,0,0.5); font-weight:400; font-size:12px;}
+  .qitem .barcode-tag{font-size:11px; color:var(--green-deep); font-family:monospace; margin-top:2px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>聯單拍照上傳</h1>
+
+  <div class="field">
+    <label>司機代號</label>
+    <input id="driverId" placeholder="輸入你的代號或姓名" autocomplete="off">
+  </div>
+
+  <button class="primary-cam-btn" id="openCameraBtn">📸 連續拍照模式（推薦，速度快）</button>
+  <div class="secondary-row">
+    拍照沒反應或用不了？改用 <a id="showFallback">單張拍照 / 從相簿選</a>
+  </div>
+
+  <div class="add-row" id="fallbackRow" style="display:none;">
+    <label class="drop" id="cameraZone">
+      <input type="file" id="cameraInput" accept="image/*" capture="environment">
+      <div class="icon">📷</div>
+      <div class="main">拍一張</div>
+    </label>
+    <label class="drop" id="galleryZone">
+      <input type="file" id="galleryInput" accept="image/*" multiple>
+      <div class="icon">🖼️</div>
+      <div class="main">從相簿選多張</div>
+    </label>
+  </div>
+
+  <div class="queue" id="queueArea" style="display:none;">
+    <h2>待上傳（<span id="qcount">0</span> 張）</h2>
+    <div id="queueList"></div>
+  </div>
+
+  <button class="btn" id="submitBtn" disabled>全部上傳</button>
+  <div id="msgArea"></div>
+
+  <div class="list">
+    <h2>這台裝置最近上傳的紀錄</h2>
+    <div id="recentList"></div>
+  </div>
+</div>
+
+<div id="cameraOverlay">
+  <div class="cam-topbar">
+    <div>本次已拍 <span class="count" id="camCount">0</span> 張</div>
+    <button id="camDoneBtn">完成，返回清單</button>
+  </div>
+  <video id="cameraVideo" autoplay playsinline muted></video>
+  <div class="cam-flash" id="camFlash"></div>
+  <div class="barcode-hint" id="barcodeHint" style="display:none;"></div>
+  <div class="cam-bottombar">
+    <button class="shutter" id="shutterBtn"></button>
+  </div>
+  <div class="cam-error" id="camError" style="display:none;">
+    <div id="camErrorText">相機初始化中…</div>
+    <button id="camErrorClose">改用單張拍照</button>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const RECENT_KEY = 'waste4_recent_uploads';
+let queue = []; // { id, file, url, status }
+let seq = 0;
+
+function loadDriverId(){
+  const saved = localStorage.getItem('waste4_driver_id');
+  if(saved) $('driverId').value = saved;
+}
+loadDriverId();
+
+function addFiles(fileList){
+  Array.from(fileList).forEach(file=>{
+    queue.push({ id: ++seq, file, name: file.name, url: URL.createObjectURL(file), status: 'pending', msg: '', scannedListNo: null });
+  });
+  renderQueue();
+}
+
+function addCapturedBlob(blob, scannedListNo){
+  const name = `capture_${Date.now()}.jpg`;
+  queue.push({ id: ++seq, file: blob, name, url: URL.createObjectURL(blob), status: 'pending', msg: '', scannedListNo: scannedListNo || null });
+  renderQueue();
+}
+
+$('cameraInput').addEventListener('change', e=>{
+  if(e.target.files.length) addFiles(e.target.files);
+  e.target.value = '';
+});
+$('galleryInput').addEventListener('change', e=>{
+  if(e.target.files.length) addFiles(e.target.files);
+  e.target.value = '';
+});
+$('driverId').addEventListener('input', updateSubmitState);
+
+$('showFallback').addEventListener('click', ()=>{
+  $('fallbackRow').style.display = $('fallbackRow').style.display === 'none' ? 'flex' : 'none';
+});
+
+// ---------- 連續拍照模式（相機直接嵌在頁面裡，不跳出App、不存進手機相簿） ----------
+let camStream = null;
+let camShotCount = 0;
+
+async function openCamera(){
+  camShotCount = 0;
+  $('camCount').textContent = '0';
+  $('camError').style.display = 'none';
+  $('cameraOverlay').classList.add('active');
+
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    showCamError('這個瀏覽器或這個連線不支援網頁內建相機（通常是因為網址不是 https:// 開頭）。請改用下面的「單張拍照」。');
+    return;
+  }
+
+  try{
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 2560 },
+        height: { ideal: 1440 },
+      },
+      audio: false,
+    });
+    $('cameraVideo').srcObject = camStream;
+    startBarcodeScanning();
+  }catch(err){
+    let msg = '無法開啟相機：' + err.message;
+    if(location.protocol !== 'https:' && location.hostname !== 'localhost'){
+      msg = '無法開啟相機——這個網址不是 https:// 開頭，手機瀏覽器基於安全性規定會擋掉鏡頭權限。請改用下面的「單張拍照」，或請管理員設定 HTTPS。';
+    } else if(err.name === 'NotAllowedError'){
+      msg = '相機權限被拒絕了。請到瀏覽器設定允許這個網站使用相機，再重新整理頁面。';
+    }
+    showCamError(msg);
+  }
+}
+
+function showCamError(msg){
+  $('camErrorText').textContent = msg;
+  $('camError').style.display = 'flex';
+}
+
+function closeCamera(){
+  if(camStream){
+    camStream.getTracks().forEach(t=>t.stop());
+    camStream = null;
+  }
+  stopBarcodeScanning();
+  $('cameraOverlay').classList.remove('active');
+}
+
+// ---------- 條碼掃描（跟連續拍照用同一支鏡頭畫面，不用另外開鏡頭） ----------
+// 聯單編號欄位如果掃得到條碼，一律以條碼為準（比AI用眼睛讀準確），
+// 只在快門按下「前3秒內」有掃到有效條碼，才會把它跟這張照片綁在一起——
+// 避免掃到上一張聯單的條碼，結果被誤用在下一張不同的聯單上。每張照片只用一次，
+// 用掉之後就清空，強制下一張要重新掃到才會再帶上，不會不小心把舊的條碼套到新照片。
+let barcodeReader = null;
+let lastScannedListNo = null;
+let lastScanTime = 0;
+const BARCODE_FRESH_MS = 3000;
+
+function startBarcodeScanning(){
+  if(typeof ZXing === 'undefined'){
+    console.warn('條碼掃描套件載入失敗（可能沒有網路），僅拍照功能仍可正常使用');
+    return;
+  }
+  try{
+    barcodeReader = new ZXing.BrowserMultiFormatReader();
+    barcodeReader.decodeFromVideoElement($('cameraVideo'), (result)=>{
+      if(result){
+        const text = result.getText().trim();
+        if(text){
+          lastScannedListNo = text;
+          lastScanTime = Date.now();
+          showBarcodeHint(text, false);
+        }
+      }
+    });
+  }catch(e){
+    console.warn('條碼掃描初始化失敗', e);
+  }
+}
+
+function stopBarcodeScanning(){
+  if(barcodeReader){
+    try{ barcodeReader.reset(); }catch(e){}
+    barcodeReader = null;
+  }
+  lastScannedListNo = null;
+  lastScanTime = 0;
+  $('barcodeHint').style.display = 'none';
+}
+
+function showBarcodeHint(text, stale){
+  const el = $('barcodeHint');
+  el.textContent = stale ? `上次掃到：${text}（已過期，靠近條碼重新掃）` : `🏷️ 已掃到聯單編號：${text}`;
+  el.classList.toggle('stale', stale);
+  el.style.display = 'block';
+}
+
+setInterval(()=>{
+  if(lastScannedListNo && Date.now() - lastScanTime > BARCODE_FRESH_MS){
+    showBarcodeHint(lastScannedListNo, true);
+  }
+}, 1000);
+
+function captureShot(){
+  const video = $('cameraVideo');
+  if(!video.videoWidth) return; // 相機還沒真正準備好畫面
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+
+  // 短暫白閃一下，給使用者「拍到了」的視覺回饋，不中斷連續拍攝
+  $('camFlash').classList.remove('flashing');
+  void $('camFlash').offsetWidth; // 強制重新觸發動畫
+  $('camFlash').classList.add('flashing');
+
+  // 條碼要「新鮮」（快門按下前3秒內掃到的）才採用，用掉就清空避免誤用到下一張
+  let scannedListNo = null;
+  if(lastScannedListNo && Date.now() - lastScanTime <= BARCODE_FRESH_MS){
+    scannedListNo = lastScannedListNo;
+  }
+  lastScannedListNo = null;
+  $('barcodeHint').style.display = 'none';
+
+  canvas.toBlob(blob=>{
+    if(blob){
+      addCapturedBlob(blob, scannedListNo);
+      camShotCount++;
+      $('camCount').textContent = camShotCount;
+    }
+  }, 'image/jpeg', 0.92);
+}
+
+$('openCameraBtn').addEventListener('click', openCamera);
+$('camDoneBtn').addEventListener('click', closeCamera);
+$('camErrorClose').addEventListener('click', ()=>{
+  closeCamera();
+  $('fallbackRow').style.display = 'flex';
+});
+$('shutterBtn').addEventListener('click', captureShot);
+
+function updateSubmitState(){
+  const hasPending = queue.some(q=>q.status==='pending' || q.status==='error');
+  $('submitBtn').disabled = !(hasPending && $('driverId').value.trim());
+}
+
+function renderQueue(){
+  $('queueArea').style.display = queue.length ? 'block' : 'none';
+  $('qcount').textContent = queue.filter(q=>q.status!=='done').length;
+  $('queueList').innerHTML = queue.map(q=>`
+    <div class="qitem" data-qid="${q.id}">
+      <img src="${q.url}">
+      <div class="info">
+        <div class="name">${q.name}</div>
+        ${q.scannedListNo ? `<div class="barcode-tag">🏷️ ${q.scannedListNo}</div>` : ''}
+        <div class="st ${q.status}">${
+          {pending:'待上傳', uploading:'上傳中…', done:'✓ 已上傳', error:'✗ ' + (q.msg||'失敗')}[q.status]
+        }</div>
+      </div>
+      ${q.status==='pending' || q.status==='error' ? `<button class="remove" data-remove="${q.id}">✕</button>` : ''}
+    </div>
+  `).join('');
+  queue.forEach(q=>{
+    const btn = document.querySelector(`[data-remove="${q.id}"]`);
+    if(btn) btn.addEventListener('click', ()=>{
+      queue = queue.filter(x=>x.id!==q.id);
+      renderQueue();
+      updateSubmitState();
+    });
+  });
+  updateSubmitState();
+}
+
+$('submitBtn').addEventListener('click', async ()=>{
+  const driverId = $('driverId').value.trim();
+  const toUpload = queue.filter(q=>q.status==='pending' || q.status==='error');
+
+  const confirmed = confirm(`確定要上傳這 ${toUpload.length} 張聯單照片嗎？\n司機代號：${driverId}\n\n上傳後無法收回，請確認照片跟張數沒有拍錯/選錯。`);
+  if(!confirmed) return;
+
+  localStorage.setItem('waste4_driver_id', driverId);
+  $('submitBtn').disabled = true;
+
+  let okCount = 0, failCount = 0;
+
+  for(const q of toUpload){
+    q.status = 'uploading';
+    renderQueue();
+
+    const fd = new FormData();
+    fd.append('file', q.file, q.name);
+    fd.append('driver_id', driverId);
+    if(q.scannedListNo) fd.append('scanned_list_no', q.scannedListNo);
+
+    try{
+      const res = await fetch('/api/upload', { method:'POST', body: fd });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.detail || '上傳失敗');
+      q.status = 'done';
+      okCount++;
+      addRecent(data.record);
+    }catch(err){
+      q.status = 'error';
+      q.msg = err.message;
+      failCount++;
+    }
+    renderQueue();
+  }
+
+  queue = queue.filter(q=>q.status!=='done'); // 上傳成功的從佇列移除，失敗的留著方便重試
+  renderQueue();
+
+  $('msgArea').innerHTML = `<div class="msg info">這批完成：成功 ${okCount} 張${failCount ? `，失敗 ${failCount} 張（可以按重新上傳，或移除後補拍）` : ''}</div>`;
+  updateSubmitState();
+});
+
+function addRecent(record){
+  const list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+  list.unshift({ id: record.id, list_no: record.list_no, status: record.status, time: new Date().toLocaleString() });
+  localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0,30)));
+  renderRecent();
+}
+function renderRecent(){
+  const list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+  $('recentList').innerHTML = list.length ? list.map(r=>`
+    <div class="item">
+      <span class="status ${r.status}">${r.status === 'need_review' ? '需核對' : '已確認'}</span>
+      <span class="id">${r.list_no || '（未辨識出編號）'}</span><br>
+      <span style="color:#8b8474">${r.time}</span>
+    </div>
+  `).join('') : '<div style="color:#8b8474; font-size:13px;">還沒有上傳紀錄</div>';
+}
+renderRecent();
+</script>
+</body>
+</html>

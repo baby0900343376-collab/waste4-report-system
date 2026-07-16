@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>聯單核對後台</title>
+<style>
+  :root{
+    --ink:#1c2620; --paper:#f6f4ef; --line:#d8d2c4;
+    --green:#2f5d4f; --green-deep:#1d3f35; --amber:#8a5a12; --red:#a5402f;
+    --mono:'SFMono-Regular',Consolas,monospace;
+  }
+  *{box-sizing:border-box;}
+  html{scrollbar-gutter: stable;}
+  body{margin:0; background:var(--paper); color:var(--ink); font-family:'Segoe UI',system-ui,sans-serif; overflow-y:scroll;}
+  .wrap{max-width:1180px; margin:0 auto; padding:20px 20px 60px;}
+  header{display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--ink); padding-bottom:12px; margin-bottom:16px;}
+  h1{font-size:20px; margin:0;}
+  .tabs{display:flex; gap:8px; margin-bottom:14px;}
+  .tab{padding:8px 14px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; font-size:13px; font-weight:600;}
+  .tab.active{background:var(--green-deep); color:#fff; border-color:var(--green-deep);}
+  .toolbar{display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;}
+  .btn{padding:9px 16px; border-radius:6px; border:none; font-size:13.5px; font-weight:700; cursor:pointer;}
+  .btn-ghost{background:#fff; color:var(--ink); border:1px solid var(--line);}
+  .btn-primary{background:var(--green-deep); color:#fff;}
+  .btn-primary:disabled{opacity:0.4; cursor:default;}
+  table{width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden;}
+  th, td{padding:8px 10px; border-bottom:1px solid var(--line); font-size:13px; text-align:left; vertical-align:middle;}
+  th{background:#efece2; font-size:11.5px; text-transform:uppercase; color:#6b6459;}
+  tr:last-child td{border-bottom:none;}
+  img.thumb{width:48px; height:48px; object-fit:cover; border-radius:4px; cursor:pointer;}
+  select, input[type=text], input[type=date]{
+    font-family:var(--mono); font-size:12.5px; padding:5px 6px; border:1px solid var(--line); border-radius:4px; width:100%;
+  }
+  .status-pill{font-size:11px; padding:2px 8px; border-radius:10px; font-weight:700;}
+  .status-pill.need_review{background:#fdf0da; color:var(--amber);}
+  .status-pill.exported{background:#e7e5df; color:#6b6459;}
+  .status-pill.processing{background:#e5eef7; color:#2b5a8a;}
+  .note{font-size:11.5px; color:var(--red); max-width:220px;}
+  .conf{font-family:var(--mono); font-size:12px;}
+  .autosave-indicator{
+    font-size:11px; color:#6b6459; height:14px; line-height:14px; margin-bottom:4px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px;
+  }
+  .delete-btn{font-size:11.5px; padding:5px 9px; border-radius:5px; border:1px solid var(--red); background:#fff; color:var(--red); cursor:pointer; margin-top:4px;}
+  .empty{padding:40px; text-align:center; color:#8b8474;}
+  .modal-bg{position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:10;}
+  .modal-bg img{max-width:90vw; max-height:90vh; border-radius:8px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>廢四機聯單 核對後台</h1>
+    <div id="countInfo" style="font-size:13px; color:#6b6459;"></div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-status="need_review">未匯出</div>
+    <div class="tab" data-status="exported">已匯出</div>
+    <div class="tab" data-status="">全部</div>
+    <select id="driverFilter" style="margin-left:auto; padding:6px 10px; border-radius:6px; border:1px solid var(--line); font-size:13px;">
+      <option value="">全部人</option>
+    </select>
+  </div>
+
+  <div class="toolbar">
+    <div style="display:flex; align-items:center; gap:16px;">
+      <label style="font-size:13px;"><input type="checkbox" id="selectAll"> 全選</label>
+      <label style="font-size:13px;"><input type="checkbox" id="onlyProblems"> 只顯示有問題的（信心低／欄位缺漏）</label>
+      <button class="btn btn-ghost" id="fixDatesBtn" style="font-size:12.5px; padding:6px 12px;" title="把資料庫裡所有「回收日期晚於收受日期」的舊資料，回收日期自動改成跟收受日期同一天">一鍵修正日期異常</button>
+    </div>
+    <button class="btn btn-primary" id="exportBtn" disabled>匯出選取項目為 CSV</button>
+  </div>
+
+  <div id="tableArea"></div>
+</div>
+<div id="imgModal"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let currentStatus = 'need_review';
+let currentDriver = '';
+let records = [];
+let options = { item_types: {}, brands: {} };
+let selected = new Set();
+
+async function loadOptions(){
+  const res = await fetch('/api/options');
+  options = await res.json();
+}
+
+async function loadDrivers(){
+  const res = await fetch('/api/drivers');
+  const data = await res.json();
+  const select = $('driverFilter');
+  const prevValue = select.value;
+  select.innerHTML = '<option value="">全部人</option>' +
+    data.drivers.map(d => `<option value="${d}">${d}</option>`).join('');
+  select.value = prevValue; // 重新整理選項後盡量保留原本選的人
+}
+
+let lastRecordsSignature = null;
+
+async function loadRecords({ force = false } = {}){
+  const params = new URLSearchParams();
+  if(currentStatus) params.set('status', currentStatus);
+  if(currentDriver) params.set('driver_id', currentDriver);
+  const url = params.toString() ? `/api/records?${params}` : '/api/records';
+  const res = await fetch(url);
+  const data = await res.json();
+  const fetchedRecords = data.records;
+  const signature = JSON.stringify(fetchedRecords);
+  if(!force && signature === lastRecordsSignature){
+    return; // 資料沒變，跳過重畫，避免背景輪詢造成卡頓
+  }
+  lastRecordsSignature = signature;
+  // 順序固定用id（新的在上面），不要用「有沒有問題」動態排序——
+  // 那樣的話，你剛把一筆改好、review_note從有變沒有，下次背景輪詢重新排序時，
+  // 這一列就會整個跳到別的位置去，正在編輯時感覺就是畫面一直亂跳。
+  // 要找有問題的記錄，用旁邊「只顯示有問題的」勾選框篩選就好，不需要靠排序。
+  records = [...fetchedRecords].sort((a, b) => b.id - a.id);
+  render();
+}
+
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click', ()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    currentStatus = tab.dataset.status;
+    selected = new Set(); // 切分頁才清掉勾選，單純資料更新不要清（不然勾到一半背景輪詢一次就白選了）
+    loadRecords({ force: true });
+  });
+});
+
+// 選項清單（尤其品牌，每個項目30~50個）在整個畫面存在期間不會變，快取起來重複使用。
+// 更重要的優化：一開始「不」把全部選項塞進畫面——那是真正卡頓的主因（一列3個select、
+// 每個select幾十個option，列數一多，第一次畫表格就要建出成千上萬個DOM節點）。
+// 改成每個select一開始只放「目前選中的那個值」這一個option（極輕量），
+// 使用者真的點開那個下拉選單時（focus事件），才臨時把完整選項灌進去。
+const _itemOptionsHtmlCache = {};
+const _typeOptionsHtmlCache = {};
+const _brandOptionsHtmlCache = {};
+
+function itemOptionsHtml(){
+  if(_itemOptionsHtmlCache.html) return _itemOptionsHtmlCache.html;
+  const items = Object.keys(options.item_types);
+  const html = `<option value="">--</option>` + items.map(i=>`<option value="${i}">${i}</option>`).join('');
+  _itemOptionsHtmlCache.html = html;
+  return html;
+}
+function typeOptionsHtml(item){
+  if(_typeOptionsHtmlCache[item]) return _typeOptionsHtmlCache[item];
+  const types = options.item_types[item] || [];
+  const html = `<option value="">--</option>` + types.map(t=>`<option value="${t}">${t}</option>`).join('');
+  _typeOptionsHtmlCache[item] = html;
+  return html;
+}
+function brandOptionsHtml(item){
+  if(_brandOptionsHtmlCache[item]) return _brandOptionsHtmlCache[item];
+  const brands = options.brands[item] || [];
+  const html = `<option value="">--</option>` + brands.map(b=>`<option value="${b}">${b}</option>`).join('');
+  _brandOptionsHtmlCache[item] = html;
+  return html;
+}
+
+// 只放目前值的「輕量版」select，data-lazy 屬性紀錄要載入哪一種選項清單
+function lightSelect(field, currentValue, lazyKind, lazyKey, label){
+  const shown = label || currentValue || '--';
+  return `<select data-field="${field}" data-lazy="${lazyKind}" data-lazy-key="${lazyKey || ''}">
+    <option value="${currentValue || ''}" selected>${shown}</option>
+  </select>`;
+}
+
+function itemSelect(rec){
+  return lightSelect('item', rec.item, 'item', '');
+}
+function typeSelect(rec){
+  return lightSelect('type', rec.type, 'type', rec.item);
+}
+function brandSelect(rec){
+  const brands = options.brands[rec.item] || [];
+  const hasCurrent = rec.brand && brands.includes(rec.brand);
+  const label = (!hasCurrent && rec.brand) ? `${rec.brand}（AI原文，未在清單中）` : null;
+  return lightSelect('brand', rec.brand, 'brand', rec.item, label);
+}
+
+// 使用者第一次點進某個select時，才把完整選項灌進去，並把目前值設回去（避免選項插入後跑掉）
+function expandSelectOnFocus(selectEl){
+  if(selectEl.dataset.expanded === '1') return;
+  const kind = selectEl.dataset.lazy;
+  const key = selectEl.dataset.lazyKey;
+  const currentValue = selectEl.value;
+  const currentLabel = selectEl.options[0] ? selectEl.options[0].textContent : currentValue;
+  let html;
+  if(kind === 'item') html = itemOptionsHtml();
+  else if(kind === 'type') html = typeOptionsHtml(key);
+  else if(kind === 'brand') html = brandOptionsHtml(key);
+  else return;
+
+  // 品牌是AI原文、不在官方清單裡的情況：完整清單裡不會有這個值，額外補一個option進去，
+  // 不然選單展開後這個值會憑空消失，內勤還以為AI辨識結果不見了
+  if(kind === 'brand' && currentValue && !(options.brands[key] || []).includes(currentValue)){
+    html = `<option value="${currentValue}">${currentLabel}</option>` + html;
+  }
+
+  selectEl.innerHTML = html;
+  selectEl.value = currentValue;
+  selectEl.dataset.expanded = '1';
+}
+
+// 事件代理：整個表格只掛一個 focusin 監聽（不用每個select各掛一個），
+// 使用者點進哪個select，就展開哪個select的完整選項。表格重畫時這個監聽器不會失效，
+// 因為它掛在 tableArea 這個容器本身，不是掛在每次重建的 <select> 上。
+$('tableArea').addEventListener('focusin', e=>{
+  if(e.target.tagName === 'SELECT' && e.target.dataset.lazy){
+    expandSelectOnFocus(e.target);
+  }
+});
+
+function render(){
+  const onlyProblems = $('onlyProblems').checked;
+  const visibleRecords = onlyProblems ? records.filter(r => r.review_note) : records;
+
+  $('countInfo').textContent = onlyProblems
+    ? `共 ${records.length} 筆，其中 ${visibleRecords.length} 筆有問題`
+    : `共 ${records.length} 筆`;
+  $('exportBtn').disabled = selected.size === 0;
+
+  if(visibleRecords.length === 0){
+    $('tableArea').innerHTML = `<div class="empty">${onlyProblems ? '目前沒有需要處理的問題記錄 🎉' : '這個分類目前沒有資料'}</div>`;
+    return;
+  }
+
+  $('tableArea').innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th></th><th>照片</th><th>聯單編號</th><th>收受日期</th><th>回收日期</th>
+          <th>項目</th><th>型態</th><th>品牌</th><th>信心</th><th>狀態／備註</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${visibleRecords.map(rowHtml).join('')}
+      </tbody>
+    </table>
+  `;
+
+  visibleRecords.forEach(rec=>{
+    const row = document.querySelector(`tr[data-row="${rec.id}"]`);
+    row.querySelector('.rowcheck').addEventListener('change', e=>{
+      if(e.target.checked) selected.add(rec.id); else selected.delete(rec.id);
+      $('exportBtn').disabled = selected.size === 0;
+    });
+    row.querySelector('img.thumb').addEventListener('click', ()=> showImg(rec.photo_path));
+    const itemSel = row.querySelector('[data-field=item]');
+    itemSel.addEventListener('change', ()=>{
+      rec.item = itemSel.value;
+      rec.type = null; rec.brand = null;
+      row.querySelector('.typecell').innerHTML = typeSelect(rec);
+      row.querySelector('.brandcell').innerHTML = brandSelect(rec);
+      wireAutoSave(row, rec.id); // typecell/brandcell剛被換掉，裡面的select是新的DOM元素，要重新綁監聽
+      scheduleAutoSave(rec.id, row);
+    });
+    row.querySelector('.delete-btn').addEventListener('click', ()=> deleteRow(rec));
+    wireAutoSave(row, rec.id);
+  });
+}
+
+// 改完欄位不用再按按鈕存檔——每個欄位change時（文字欄位失焦、下拉選單選定）就自動存檔並直接標記為「已確認」
+function wireAutoSave(row, id){
+  row.querySelectorAll('[data-field]').forEach(el=>{
+    if(el.dataset.autosaveWired === '1') return; // 同一個元素不要重複綁
+    el.dataset.autosaveWired = '1';
+    el.addEventListener('change', ()=> scheduleAutoSave(id, row));
+  });
+}
+
+const autoSaveTimers = new Map();
+
+function scheduleAutoSave(id, row){
+  if(autoSaveTimers.has(id)) clearTimeout(autoSaveTimers.get(id));
+  const indicator = row.querySelector('.autosave-indicator');
+  if(indicator) indicator.textContent = '將於片刻後儲存…';
+  const timer = setTimeout(()=>{ autoSaveTimers.delete(id); doAutoSave(id, row); }, 600);
+  autoSaveTimers.set(id, timer);
+}
+
+async function doAutoSave(id, row){
+  const indicator = row.querySelector('.autosave-indicator');
+  const fields = {};
+  row.querySelectorAll('[data-field]').forEach(el=>{
+    fields[el.dataset.field] = el.value || null;
+  });
+  // 不再自動改status——「已確認」這個中間狀態拿掉了，改欄位單純只是存資料，
+  // 狀態只有「未匯出/已匯出」兩種，只有真的匯出才會變成已匯出。
+
+  if(indicator) indicator.textContent = '儲存中…';
+  try{
+    const res = await fetch(`/api/records/${id}`, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(fields),
+    });
+    const updated = await res.json();
+    if(!res.ok) throw new Error(updated.detail || res.statusText);
+
+    // 同步本地資料，避免15秒背景輪詢誤以為外部又有變動，把整張表格重畫一次打斷正在編輯的欄位
+    const idx = records.findIndex(r=>r.id===id);
+    if(idx !== -1) records[idx] = updated;
+    lastRecordsSignature = JSON.stringify(records);
+
+    if(indicator){
+      indicator.style.color = '';
+      indicator.textContent = '✓ 已自動儲存';
+      setTimeout(()=>{ if(indicator) indicator.textContent = ''; }, 2500);
+    }
+  }catch(err){
+    if(indicator){
+      indicator.textContent = `❌ ${err.message}`;
+      indicator.title = err.message; // 訊息可能太長被省略號截斷，滑鼠移上去可以看完整內容
+      indicator.style.color = 'var(--red)';
+    }
+    console.error('自動儲存失敗', err);
+  }
+}
+
+function rowHtml(rec){
+  return `
+    <tr data-row="${rec.id}">
+      <td><input type="checkbox" class="rowcheck" ${selected.has(rec.id)?'checked':''} ${rec.status==='exported'?'disabled':''}></td>
+      <td><img class="thumb" src="${rec.photo_path}"></td>
+      <td><input type="text" data-field="list_no" data-id="${rec.id}" value="${rec.list_no || ''}"></td>
+      <td><input type="date" data-field="get_dt" data-id="${rec.id}" value="${rec.get_dt || ''}"></td>
+      <td><input type="date" data-field="recycle_dt" data-id="${rec.id}" value="${rec.recycle_dt || ''}"></td>
+      <td class="itemcell">${itemSelect(rec)}</td>
+      <td class="typecell">${typeSelect(rec)}</td>
+      <td class="brandcell">${brandSelect(rec)}</td>
+      <td class="conf">${rec.confidence != null ? rec.confidence.toFixed(2) : '-'}</td>
+      <td>
+        <span class="status-pill ${rec.confidence == null ? 'processing' : rec.status}">${
+          rec.confidence == null ? '⏳ AI辨識中' : {need_review:'未匯出',exported:'已匯出'}[rec.status]
+        }</span>
+        ${rec.review_note ? `<div class="note">${rec.review_note}</div>` : ''}
+      </td>
+      <td>
+        <div class="autosave-indicator"></div>
+        <button class="delete-btn" title="刪除這筆記錄">刪除</button>
+      </td>
+    </tr>
+  `;
+}
+
+async function deleteRow(rec){
+  const label = rec.list_no || `（無編號，記錄 #${rec.id}）`;
+  if(!confirm(`確定要刪除這筆記錄嗎？\n聯單編號：${label}\n\n這個動作無法復原（只會刪資料庫紀錄，照片檔案不會被刪）。`)){
+    return;
+  }
+
+  let url = `/api/records/${rec.id}`;
+  if(rec.status === 'exported'){
+    if(!confirm(`⚠️ 這筆已經匯出過（可能已經送出申報），真的要刪嗎？`)) return;
+    url += '?force=true';
+  }
+
+  const res = await fetch(url, { method: 'DELETE' });
+  if(!res.ok){
+    const err = await res.json();
+    alert('刪除失敗：' + (err.detail || res.statusText));
+    return;
+  }
+  await loadRecords({ force: true });
+}
+
+$('selectAll').addEventListener('change', e=>{
+  selected = new Set();
+  if(e.target.checked){
+    const onlyProblems = $('onlyProblems').checked;
+    const visibleRecords = onlyProblems ? records.filter(r => r.review_note) : records;
+    visibleRecords.forEach(r=>{ if(r.status!=='exported') selected.add(r.id); });
+  }
+  // 只更新勾選框跟匯出按鈕狀態，不重畫整張表格（表格內容沒變，重畫下拉選單很浪費）
+  document.querySelectorAll('.rowcheck').forEach(cb=>{
+    const id = Number(cb.closest('tr').dataset.row);
+    cb.checked = selected.has(id);
+  });
+  $('exportBtn').disabled = selected.size === 0;
+});
+
+$('onlyProblems').addEventListener('change', ()=>{
+  selected = new Set();
+  $('selectAll').checked = false;
+  render();
+});
+
+$('exportBtn').addEventListener('click', async ()=>{
+  const ids = Array.from(selected);
+  const res = await fetch('/api/export', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ ids }),
+  });
+  if(!res.ok){
+    const err = await res.json();
+    alert('匯出失敗：' + (err.detail || res.statusText));
+    return;
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `waste4_export_${ids.length}records.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  loadRecords({ force: true });
+});
+
+function showImg(src){
+  const modal = document.createElement('div');
+  modal.className = 'modal-bg';
+  modal.innerHTML = `<img src="${src}">`;
+  modal.addEventListener('click', ()=> modal.remove());
+  document.body.appendChild(modal);
+}
+
+$('driverFilter').addEventListener('change', ()=>{
+  currentDriver = $('driverFilter').value;
+  selected = new Set();
+  loadRecords({ force: true });
+});
+
+$('fixDatesBtn').addEventListener('click', async ()=>{
+  if(!confirm('這會掃描資料庫裡所有「回收日期晚於收受日期」的舊資料（還沒匯出的），\n把回收日期自動改成跟收受日期同一天，並標記提醒你核對。\n\n確定要執行嗎？')) return;
+
+  $('fixDatesBtn').disabled = true;
+  $('fixDatesBtn').textContent = '修正中…';
+  try{
+    const res = await fetch('/api/maintenance/fix-invalid-dates', { method: 'POST' });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.detail || res.statusText);
+    alert(data.fixed_count === 0
+      ? '沒有找到需要修正的記錄，資料是乾淨的。'
+      : `已修正 ${data.fixed_count} 筆記錄，回收日期已改成跟收受日期同一天，建議回清單核對一下這幾筆。`);
+    await loadRecords({ force: true });
+  }catch(err){
+    alert('修正失敗：' + err.message);
+  }finally{
+    $('fixDatesBtn').disabled = false;
+    $('fixDatesBtn').textContent = '一鍵修正日期異常';
+  }
+});
+
+(async function init(){
+  await loadOptions();
+  await loadDrivers();
+  await loadRecords();
+  setInterval(()=>{ loadRecords(); loadDrivers(); }, 15000); // 每15秒自動刷新，方便看到司機新上傳的照片跟新出現的人
+})();
+</script>
+</body>
+</html>
